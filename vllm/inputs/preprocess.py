@@ -176,7 +176,7 @@ class InputPreprocessor:
     ) -> dict[str, Any]:
         kwargs = dict[str, Any]()
 
-        if self.model_config.hf_config.model_type == "whisper":
+        if self.model_config.hf_config.model_type == "whisper" or self.model_config.hf_config.model_type == "nemotron_parse":
             # For Whisper, special tokens should be provided by the user based
             # on the task and language of their request. Also needed to avoid
             # appending an EOS token to the prompt which disrupts generation.
@@ -752,6 +752,7 @@ class InputPreprocessor:
                 decoder_inputs = None
             else:
                 decoder_inputs = self._prompt_to_llm_inputs(decoder_input)
+
             # For multimodal model, override decoder prompt from processor
             # with explicit decoder prompt.
             if self.model_config.is_multimodal_model:
