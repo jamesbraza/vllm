@@ -166,7 +166,7 @@ class RadioWithNeckLight(nn.Module):
         self.model_encoder.load_weights(model_encoder_weights)
 
 
-class NemotronParseLightProcessingInfo(NemotronParseProcessingInfo):
+class NemotronParseTCProcessingInfo(NemotronParseProcessingInfo):
 
     def get_num_image_tokens(self) -> int:
         config=self.get_hf_config()
@@ -176,7 +176,7 @@ class NemotronParseLightProcessingInfo(NemotronParseProcessingInfo):
         return (final_size[0] // patch_size // 2) * ((final_size[1] // patch_size // 2) // 4) + 1
 
 
-class NemotronParseLightDummyInputsBuilder(BaseDummyInputsBuilder[NemotronParseLightProcessingInfo]):
+class NemotronParseTCDummyInputsBuilder(BaseDummyInputsBuilder[NemotronParseTCProcessingInfo]):
 
     def get_dummy_text(self, mm_counts: Mapping[str, int]) -> str:
         return ""
@@ -199,7 +199,7 @@ class NemotronParseLightDummyInputsBuilder(BaseDummyInputsBuilder[NemotronParseL
         }
 
 
-class NemotronParseLightMultiModalProcessor(EncDecMultiModalProcessor[NemotronParseLightProcessingInfo]):
+class NemotronParseTCMultiModalProcessor(EncDecMultiModalProcessor[NemotronParseTCProcessingInfo]):
 
     def create_encoder_prompt(
         self,
@@ -255,10 +255,10 @@ class NemotronParseLightMultiModalProcessor(EncDecMultiModalProcessor[NemotronPa
         ]
 
 
-@MULTIMODAL_REGISTRY.register_processor(NemotronParseLightMultiModalProcessor,
-                                         info=NemotronParseLightProcessingInfo,
-                                         dummy_inputs=NemotronParseLightDummyInputsBuilder)
-class NemotronParseLightForConditionalGeneration(nn.Module, SupportsMultiModal,
+@MULTIMODAL_REGISTRY.register_processor(NemotronParseTCMultiModalProcessor,
+                                         info=NemotronParseTCProcessingInfo,
+                                         dummy_inputs=NemotronParseTCDummyInputsBuilder)
+class NemotronParseTCForConditionalGeneration(nn.Module, SupportsMultiModal,
                                     SupportsV0Only):
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):

@@ -176,7 +176,7 @@ class InputPreprocessor:
     ) -> dict[str, Any]:
         kwargs = dict[str, Any]()
 
-        if self.model_config.hf_config.model_type == "whisper" or self.model_config.hf_config.model_type == "nemotron_parse":
+        if self.model_config.hf_config.model_type in ["whisper", "nemotron_parse", "nemotron_parse_tc"]:
             # For Whisper, special tokens should be provided by the user based
             # on the task and language of their request. Also needed to avoid
             # appending an EOS token to the prompt which disrupts generation.
