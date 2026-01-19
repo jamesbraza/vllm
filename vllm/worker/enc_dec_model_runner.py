@@ -419,9 +419,6 @@ class EncoderDecoderModelRunner(GPUModelRunnerBase[EncoderDecoderModelInput]):
         encoder_seq_lens: List[int] = []
         if is_prompt:
             # Prefill phase.
-            cross_block_tables = self._empty_int32_tensor().view(
-                len(seq_group_metadata_list), -1)
-
             # Extract input tokens/positions, cross-attention slot-mapping,
             # & seq len from each sequence group metadata
             (
@@ -433,6 +430,7 @@ class EncoderDecoderModelRunner(GPUModelRunnerBase[EncoderDecoderModelInput]):
                 [],
                 [],
             )
+            cross_block_tables_list: List[List[int]] = []
             for seq_group_metadata in seq_group_metadata_list:
                 # Build seq lens
                 seq_len = seq_group_metadata.encoder_seq_data.get_len()
@@ -440,13 +438,13 @@ class EncoderDecoderModelRunner(GPUModelRunnerBase[EncoderDecoderModelInput]):
                 encoder_seq_lens.append(seq_len)
 
                 # Build slot mapping
-                is_profile_run = (seq_group_metadata.block_tables is None)
-                if is_profile_run:
+                if seq_group_metadata.cross_block_table is None:
                     # During memory profiling, the block tables are not
                     # initialized yet. In this case, we just use a dummy
-                    # slot mapping.
-                    # In embeddings, the block tables are {seq_id: None}.
+                    # slot mapping so the profiling pass can run without
+                    # crashing
                     cross_slot_mapping.extend([PAD_SLOT_ID] * seq_len)
+                    cross_block_tables_list.append([])
                 else:
                     for i in range(0, seq_len):
                         block_number = seq_group_metadata.cross_block_table[
@@ -454,6 +452,8 @@ class EncoderDecoderModelRunner(GPUModelRunnerBase[EncoderDecoderModelInput]):
                         block_offset = i % self.block_size
                         slot = block_number * self.block_size + block_offset
                         cross_slot_mapping.append(slot)
+                    cross_block_tables_list.append(
+                        list(seq_group_metadata.cross_block_table))
 
                 # Build encoder input tokens
                 encoder_input_tokens.extend(token_ids)
@@ -467,6 +467,14 @@ class EncoderDecoderModelRunner(GPUModelRunnerBase[EncoderDecoderModelInput]):
                 encoder_input_positions)
             cross_slot_mapping_tensor = self._list_to_long_tensor(
                 cross_slot_mapping)
+
+            cross_block_tables = make_tensor_with_pad(
+                cross_block_tables_list,
+                max_len=max(len(bt) for bt in cross_block_tables_list),
+                pad=0,
+                dtype=torch.int32,
+                device=self.device,
+            )
 
         else:
             # Decode phase.

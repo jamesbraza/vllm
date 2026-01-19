@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import itertools
+from unittest.mock import MagicMock
 
 import pytest
 import torch
@@ -10,7 +11,9 @@ from vllm.engine.arg_utils import EngineArgs
 from vllm.platforms import current_platform
 from vllm.sequence import SamplingParams, SequenceData, SequenceGroupMetadata
 from vllm.utils import make_tensor_with_pad
-from vllm.worker.enc_dec_model_runner import EncoderDecoderModelRunner
+from vllm.worker.enc_dec_model_runner import (EncoderDecoderModelInput,
+                                              EncoderDecoderModelRunner)
+from vllm.worker.model_runner_base import ModelRunnerBase
 
 BATCH_SIZES = [1, 4, 16, 64, 256]
 
@@ -191,19 +194,26 @@ def test_prepare_prompt(batch_size):
 
     # Verify block tables are correct for prompts
     # - Decoder self-attention
-    expected = torch.tensor(
+    expected_decoder_block_tables = torch.tensor(
         [[] for _ in range(len(seq_group_metadata_list))],
         dtype=torch.int32,
         device=model_runner.device,
     )
     assert torch.equal(
         attn_metadata.block_tables,
-        expected,
+        expected_decoder_block_tables,
     )
     # - Encoder/decoder cross-attention
+    expected_cross_block_tables = make_tensor_with_pad(
+        [cross_block_table for _ in range(len(seq_group_metadata_list))],
+        max_len=len(cross_block_table),
+        pad=0,
+        dtype=torch.int32,
+        device=model_runner.device,
+    )
     assert torch.equal(
         attn_metadata.cross_block_tables,
-        expected,
+        expected_cross_block_tables,
     )
 
     # Cuda graph should not be used for prefill.
@@ -646,3 +656,92 @@ def test_prepare_decode_cuda_graph(batch_size, multiple_seqs_per_seq_group):
         encoder_input_tokens,
         encoder_input_positions,
     )
+
+
+class MockEncoderDecoderModelRunner(ModelRunnerBase):
+
+    def __init__(self, block_size: int = 16, device: str = "cpu"):
+        # Skip ModelRunnerBase.__init__, which requires VllmConfig
+        self.block_size = block_size
+        self.device = device
+
+    def _list_to_int32_tensor(self, _list: list[int]) -> torch.Tensor:
+        return torch.tensor(_list, dtype=torch.int32, device=self.device)
+
+    def _list_to_long_tensor(self, _list: list[int]) -> torch.Tensor:
+        return torch.tensor(_list, dtype=torch.long, device=self.device)
+
+    def _empty_int32_tensor(self) -> torch.Tensor:
+        return self._list_to_int32_tensor([])
+
+    def _empty_long_tensor(self) -> torch.Tensor:
+        return self._list_to_long_tensor([])
+
+    # Bind the actual method from EncoderDecoderModelRunner
+    _prepare_encoder_model_input_tensors = (
+        EncoderDecoderModelRunner._prepare_encoder_model_input_tensors)
+
+    def make_model_input_from_broadcasted_tensor_dict(self, tensor_dict):
+        raise NotImplementedError
+
+    def prepare_model_input(self,
+                            seq_group_metadata_list,
+                            virtual_engine=0,
+                            finished_requests_ids=None):
+        raise NotImplementedError
+
+    def get_model(self):
+        raise NotImplementedError
+
+
+@pytest.mark.parametrize(
+    ("cross_block_tables_input", "expected_shape", "expected_rows"),
+    [
+        pytest.param(
+            [[10, 11, 12], [20, 21], [30, 31, 32, 33]],
+            (3, 4),
+            [[10, 11, 12, 0], [20, 21, 0, 0], [30, 31, 32, 33]],
+            id="multiple_valid_different_lengths",
+        ),
+        pytest.param(
+            [None],
+            (1, 0),
+            [[]],
+            id="single_none_profile_run",
+        ),
+        pytest.param(
+            [[10, 11], None, [30]],
+            (3, 2),
+            [[10, 11], [0, 0], [30, 0]],
+            id="mixed_none_and_valid",
+        ),
+    ],
+)
+def test_cross_block_tables_prefill(
+    cross_block_tables_input: list[list[int] | None],
+    expected_shape: tuple[int, int],
+    expected_rows: list[list[int]],
+):
+    """Verify cross_block_tables is built from seq_group_metadata."""
+    seq_group_metadata_list = [
+        SequenceGroupMetadata(
+            request_id=f"req_{i}",
+            is_prompt=True,  # Test prefill phase
+            seq_data={0: SequenceData.from_seqs(list(range(3)))},
+            sampling_params=SamplingParams(temperature=0),
+            block_tables={0: [i + 1]},
+            encoder_seq_data=SequenceData.from_seqs(list(range(3))),
+            cross_block_table=cross_block_table,
+        ) for i, cross_block_table in enumerate(cross_block_tables_input)
+    ]
+
+    runner = MockEncoderDecoderModelRunner()
+    model_input = MagicMock(spec=EncoderDecoderModelInput)
+    runner._prepare_encoder_model_input_tensors(seq_group_metadata_list,
+                                                model_input)
+
+    cross_block_tables = model_input.attn_metadata.cross_block_tables
+    assert cross_block_tables is not None
+    assert cross_block_tables.shape == expected_shape
+    for i, expected_row in enumerate(expected_rows):
+        assert cross_block_tables[i].tolist() == expected_row
