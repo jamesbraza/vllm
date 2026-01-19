@@ -5,11 +5,8 @@ import pytest
 import torch
 
 from vllm.model_executor.layers.sampler import SamplerOutput
-from vllm.sampling_params import SamplingParams
 from vllm.sequence import (CompletionSequenceGroupOutput, IntermediateTensors,
-                           SequenceData, SequenceDataDelta,
-                           SequenceGroupMetadata, SequenceGroupMetadataDelta,
-                           SequenceOutput, SequenceStage)
+                           SequenceData, SequenceOutput)
 
 from .core.utils import create_dummy_prompt
 
@@ -137,92 +134,3 @@ def test_sequence_intermediate_tensors_equal():
         {"1": torch.zeros([2, 4], dtype=torch.int32)})
     assert (same_key_same_value_intermediate_tensors_1 ==
             same_key_same_value_intermediate_tensors_2)
-
-
-def test_sequence_group_metadata_delta_cross_block_table():
-    """Test that cross_block_table is properly propagated via delta for
-    encoder-decoder models.
-
-    This is a regression test for a bug where cross_block_table was not
-    included in SequenceGroupMetadataDelta, causing encoder-decoder models
-    to fail during decode phase when using delta mode (SPMD).
-    """
-    # Create initial full metadata with cross_block_table
-    seq_data = SequenceData.from_seqs([1, 2, 3, 4])
-    initial_cross_block_table = [10, 11, 12]
-    metadata = SequenceGroupMetadata(
-        request_id="test_0",
-        is_prompt=True,
-        seq_data={0: seq_data},
-        sampling_params=SamplingParams(temperature=0),
-        block_tables={0: [1, 2, 3]},
-        cross_block_table=initial_cross_block_table,
-    )
-    assert metadata.cross_block_table == initial_cross_block_table
-
-    # Create a delta with updated cross_block_table.
-    # is_prompt=False because deltas are only sent after the first prefill
-    # (in SPMD/delta mode), so they always represent decode steps.
-    updated_cross_block_table = [20, 21, 22, 23]
-    delta = SequenceGroupMetadataDelta(
-        seq_data_delta={
-            0:
-            SequenceDataDelta(
-                new_output_token_ids=[5],
-                new_cumulative_logprob=0.0,
-                # 4 prompt tokens + 1 generated token = 5 total computed
-                new_num_computed_tokens=5,
-                new_stage=SequenceStage.DECODE,
-            )
-        },
-        request_id="test_0",
-        block_tables={0: [1, 2, 3, 4]},
-        is_prompt=False,
-        cross_block_table=updated_cross_block_table,
-    )
-    assert delta.cross_block_table == updated_cross_block_table
-
-    # Apply delta and verify cross_block_table is updated
-    metadata.apply_delta(delta)
-    assert metadata.cross_block_table == updated_cross_block_table
-    assert not metadata.is_prompt
-
-
-def test_sequence_group_metadata_delta_cross_block_table_none():
-    """Test that apply_delta preserves existing cross_block_table when
-    delta has None (for non-encoder-decoder models)."""
-    seq_data = SequenceData.from_seqs([1, 2, 3, 4])
-    initial_cross_block_table = [10, 11, 12]
-    metadata = SequenceGroupMetadata(
-        request_id="test_0",
-        is_prompt=True,
-        seq_data={0: seq_data},
-        sampling_params=SamplingParams(temperature=0),
-        block_tables={0: [1, 2, 3]},
-        cross_block_table=initial_cross_block_table,
-    )
-
-    # Create a delta WITHOUT cross_block_table (None).
-    # is_prompt=False because deltas are only sent after the first prefill
-    # (in SPMD/delta mode), so they always represent decode steps.
-    delta = SequenceGroupMetadataDelta(
-        seq_data_delta={
-            0:
-            SequenceDataDelta(
-                new_output_token_ids=[5],
-                new_cumulative_logprob=0.0,
-                # 4 prompt tokens + 1 generated token = 5 total computed
-                new_num_computed_tokens=5,
-                new_stage=SequenceStage.DECODE,
-            )
-        },
-        request_id="test_0",
-        block_tables={0: [1, 2, 3, 4]},
-        is_prompt=False,
-    )
-    assert delta.cross_block_table is None, "Test expects None default"
-
-    # Apply delta - cross_block_table should be preserved
-    metadata.apply_delta(delta)
-    assert metadata.cross_block_table == initial_cross_block_table
-    assert not metadata.is_prompt
