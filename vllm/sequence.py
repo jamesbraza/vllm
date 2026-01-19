@@ -890,6 +890,11 @@ class SequenceGroupMetadataDelta(
     computed_block_nums: Optional[list[int]] = None
     state: Optional[SequenceGroupState] = msgspec.field(
         default_factory=lambda: SequenceGroupState())
+    # Block table mapping to the encoder's KV cache for cross-attention.
+    # During decode, the decoder's cross-attention layers read (not write)
+    # from the encoder's KV cache. This field tells the attention kernel
+    # which memory blocks contain the encoder's cached keys/values.
+    cross_block_table: Optional[list[int]] = None
 
 
 class SequenceGroupMetadata(
@@ -987,6 +992,10 @@ class SequenceGroupMetadata(
         self.token_chunk_size = sequence_group_metadata_delta.token_chunk_size
         self.do_sample = sequence_group_metadata_delta.do_sample
         self.is_prompt = sequence_group_metadata_delta.is_prompt
+        # Update cross_block_table for encoder-decoder models
+        if sequence_group_metadata_delta.cross_block_table is not None:
+            self.cross_block_table = (
+                sequence_group_metadata_delta.cross_block_table)
 
     def finish_step(self) -> None:
         assert self.state is not None

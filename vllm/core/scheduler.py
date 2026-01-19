@@ -1617,6 +1617,7 @@ class Scheduler:
                     do_sample=do_sample,
                     token_chunk_size=token_chunk_size,
                     computed_block_nums=common_computed_block_nums,
+                    cross_block_table=cross_block_table,
                 )
             seq_group_metadata_list.append(seq_group_metadata)
 

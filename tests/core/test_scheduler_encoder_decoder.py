@@ -5,7 +5,8 @@ import pytest  # noqa
 
 from vllm.config import CacheConfig, SchedulerConfig
 from vllm.core.scheduler import Scheduler
-from vllm.sequence import SequenceGroup
+from vllm.sequence import (SequenceGroup, SequenceGroupMetadata,
+                           SequenceGroupMetadataDelta)
 
 from .utils import (append_new_token, create_dummy_prompt_encoder_decoder,
                     get_sequence_groups, schedule_and_update_computed_tokens)
@@ -103,3 +104,71 @@ def test_scheduler_schedule_simple_encoder_decoder():
         # - Verify that sequence group cross-attention block tables are
         #   NO LONGER registered with the block manager
         assert req_id not in scheduler.block_manager.cross_block_tables
+
+
+def test_scheduler_encoder_decoder_delta_mode_cross_block_table():
+    """
+    Test that cross_block_table is properly propagated in delta mode
+    for encoder-decoder models.
+
+    This is a regression test for a bug where SequenceGroupMetadataDelta
+    was missing the cross_block_table field, causing encoder-decoder models
+    to fail during decode when using SPMD mode (send_delta_data=True).
+
+    The bug: After prefill, subsequent decode steps in delta mode would
+    not include cross_block_table, so the attention layer couldn't locate
+    the encoder KV cache blocks.
+    """
+    # Small KV cache block size keeps test fast
+    # while ensuring at least 1 block is allocated
+    block_size = 4
+    # Use at least 2 seq groups to verify fix works for concurrency sequences,
+    # but keep small for test speed
+    num_seq_group = 2
+    scheduler_config = SchedulerConfig(
+        "generate",
+        max_num_batched_tokens=64,
+        max_num_seqs=num_seq_group,
+        max_model_len=
+        16,  # High enough to accommodate 4-token prompt + decode tokens
+        send_delta_data=True,  # Enable delta mode (SPMD)
+    )
+    cache_config = CacheConfig(block_size, 1.0, 1, "auto")
+    cache_config.num_cpu_blocks = 16  # enc and dec prompts per seq_group
+    cache_config.num_gpu_blocks = 16  # enc and dec prompts per seq_group
+    scheduler = Scheduler(scheduler_config, cache_config, None)
+
+    # Add encoder-decoder seq groups to scheduler
+    for i in range(num_seq_group):
+        _, _, seq_group = create_dummy_prompt_encoder_decoder(
+            str(i), block_size, block_size, block_size)
+        scheduler.add_seq_group(seq_group)
+
+    # Schedule seq groups prefill.
+    seq_group_meta_list, out = schedule_and_update_computed_tokens(scheduler)
+    assert len(
+        seq_group_meta_list
+    ) == num_seq_group, "Incorrect number of seq groups during prefill"
+    assert all(
+        isinstance(meta, SequenceGroupMetadata)
+        for meta in seq_group_meta_list), "Prefill should return full metadata"
+    assert all(meta.cross_block_table is not None
+               for meta in seq_group_meta_list
+               ), "Expecting cross block table should be set during prefill"
+    append_new_token(out, 1)
+
+    # Schedule seq groups decode.
+    seq_group_meta_list, out = schedule_and_update_computed_tokens(scheduler)
+    assert len(
+        seq_group_meta_list
+    ) == num_seq_group, "Incorrect number of seq groups during decode"
+    assert all(
+        isinstance(meta, SequenceGroupMetadataDelta)
+        for meta in seq_group_meta_list
+    ), "Test should be covering the delta code path during decode"
+    for meta in seq_group_meta_list:
+        assert meta.cross_block_table is not None, (
+            "Expecting cross block table present"
+            " for encoder-decoder cross-attention")
+        assert meta.cross_block_table, (
+            "Expecting cross block table present to have block IDs")
