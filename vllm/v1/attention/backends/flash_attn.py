@@ -647,6 +647,21 @@ class FlashAttentionImpl(AttentionImpl):
         # For decoder and cross-attention, use KV cache as before
         key_cache, value_cache = kv_cache.unbind(0)
 
+        # FA3 (H100/Hopper) handles non-contiguous tensors gracefully,
+        # but FA2 (A100/Ampere) does not.
+        # The key tensor can be a non-contiguous view with stride (2048, 64, 1)
+        # instead of (1024, 64, 1), causing FA2 to
+        # read incorrect memory locations during cross-attention.
+        if (
+            key is not None
+            and value is not None
+            and (not key.is_contiguous() or not value.is_contiguous())
+            and torch.cuda.get_device_properties(key.device).major < 9
+        ):
+            # Make key/value contiguous for FlashAttention-2 (pre-Hopper GPUs).
+            key = key.contiguous()
+            value = value.contiguous()
+
         # key and value may be None in the case of cross attention. They are
         # calculated once based on the output from the encoder and then cached
         # in KV cache.
