@@ -1328,10 +1328,19 @@ class GPUModelRunner(
         self.encoder_seq_lens.np[:num_reqs] = 0
         # Build encoder_seq_lens array mapping request indices to
         # encoder lengths for inputs scheduled in this batch
-        for req_id in num_scheduled_tokens:
+        for req_id in (
+            num_scheduled_tokens
+            if num_scheduled_tokens
+            # For encoder-decoder models, we need to iterate over ALL requests
+            # in the batch (not just scheduled tokens) to ensure decode steps
+            # can still access encoder KV cache
+            else self.input_batch.req_ids[: self.input_batch.num_reqs]
+        ):
+            if req_id not in self.input_batch.req_id_to_index:
+                continue
             req_index = self.input_batch.req_id_to_index[req_id]
             req_state = self.requests[req_id]
-            if req_state.mm_features is None:
+            if not req_state.mm_features:  # Handle both None and empty mm_features
                 self.encoder_seq_lens.np[req_index] = 0
                 continue
 
